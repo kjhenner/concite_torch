@@ -14,14 +14,14 @@ from elasticsearch.helpers import streaming_bulk
 
 ES_HOST = 'localhost'
 ES_PORT = 9200
-ES_INDEX_NAME = 'pubmed_docs'
+ES_INDEX_NAME = 'pubmed_articles'
 
 
 def search(client: Elasticsearch, query: Text, index: Text):
     body = {
         "query": {
             "match": {
-                "abstract": query
+                "context": query
             }
         }
     }

@@ -48,12 +48,12 @@ def search(client: Elasticsearch,
     return client.search(body=body, index=index)
 
 
-async def paged_msearch(client: Elasticsearch,
-                        queries: List[Text],
-                        index: Text,
-                        page_size: int = 50,
-                        size: int = 50,
-                        field: Text = 'abstract'):
+def paged_msearch(client: Elasticsearch,
+                  queries: List[Text],
+                  index: Text,
+                  page_size: int = 20,
+                  size: int = 50,
+                  field: Text = 'abstract'):
     while queries:
         page_queries = queries[:page_size]
         queries = queries[page_size:]
@@ -61,11 +61,11 @@ async def paged_msearch(client: Elasticsearch,
             yield response
 
 
-async def msearch(client: Elasticsearch,
-                  queries: List[Text],
-                  index: Text,
-                  size: int = 50,
-                  field: Text = 'abstract'):
+def msearch(client: Elasticsearch,
+            queries: List[Text],
+            index: Text,
+            size: int = 50,
+            field: Text = 'abstract'):
     search_arr = []
     for query in queries:
         header = {'index': index}
@@ -95,11 +95,12 @@ def generate_examples(data_dir: Text,
     for fname in files:
         with jsonlines.open(fname) as reader:
             for edge_datum in reader:
-                if limit and idx == limit:
-                    return
-                if not pmid_set or edge_datum['cited_paper'].get('pmid') in pmid_set:
-                    yield (edge_datum['cite_sentence'], edge_datum['cited_paper'].get('pmid'))
-                    idx += 1
+                for paper in edge_datum['cited_papers']:
+                    if limit and idx == limit:
+                        return
+                    if not pmid_set or paper.get('pmid') in pmid_set:
+                        yield (edge_datum['context'], paper.get('pmid'))
+                        idx += 1
 
 
 def get_internal_pmid_set(data_dir: Text,
@@ -144,27 +145,37 @@ def extract_year(string: Text) -> Text:
 
 
 @timeit
-def run_eval(client, examples, page_size):
+def run_eval(client, examples, page_size, field: Text='abstract'):
     y_true = []
     y_pred = []
     total = 0
-    k = 50
+    k = 150
     progress = tqdm.tqdm(unit="example", total=len(examples))
     search = paged_msearch(client,
                            [ex[0] for ex in examples],
                            'pubmed_articles',
                            size=k,
-                           page_size=page_size)
+                           page_size=page_size,
+                           field=field)
     for i, response in enumerate(search):
         cited_pmid = examples[i][1]
-        y_t = [int(result["_source"].get('pmid') == cited_pmid) for result in response['hits']['hits']]
+        results = response['hits']['hits']
+        if not results:
+            continue
+        y_t = [int(result["_source"].get('pmid') == cited_pmid) for result in results]
+        y_t += [0] * (k - len(y_t))
         if any(y_t):
             total += 1
         y_true.append(y_t)
-        y_pred.append([result["_score"] for result in response['hits']['hits']])
+        y_p = [result["_score"] for result in results]
+        y_p += [0] * (k - len(y_p))
+        y_pred.append(y_p)
         progress.update(1)
         if i % page_size == 0:
-            progress.set_postfix_str(f"nDCG: {metrics.ndcg_score(np.asarray(y_true), np.asarray(y_pred)):.3f}")
+            try:
+                progress.set_postfix_str(f"nDCG: {metrics.ndcg_score(np.asarray(y_true), np.asarray(y_pred)):.3f}")
+            except:
+                import pdb; pdb.set_trace()
     print("\n\n")
     print(f"nDCG: {metrics.ndcg_score(np.asarray(y_true), np.asarray(y_pred)):.3f}")
     print(f"A total of {total} correct results retrieved in top {k}.")
@@ -179,20 +190,21 @@ if __name__ == "__main__":
         verify_certs=False,
         port=ES_PORT)
 
+    # Gotta go fast :(
+#    client = AsyncElasticsearch(
+#        hosts=[ES_HOST],
+#        scheme='http',
+#        verify_certs=False,
+#        port=ES_PORT)
 
-    client = AsyncElasticsearch(
-        hosts=[ES_HOST],
-        scheme='http',
-        verify_certs=False,
-        port=ES_PORT)
+    pmid_set = get_internal_pmid_set(data_dir)
+    #pmid_set = None
 
-    #pmid_set = get_internal_pmid_set(data_dir)
-    pmid_set = None
-
-    limit = 1000
+    limit = 500
 
     examples = list(generate_examples(data_dir,
                                       limit=limit,
                                       pmid_set=pmid_set))
 
-    run_eval(client, examples, 200)
+    run_eval(client, examples, 100, 'abstract')
+    run_eval(client, examples, 100, 'context')

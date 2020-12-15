@@ -80,6 +80,7 @@ def parse_cit_contexts(string: Text) -> Tuple[Dict[Text, Any]]:
     rid = ''
     ref_dict = defaultdict(dict)
     offset_dict = defaultdict(list)
+    authors = []
     document['keywords'] = ''
     for event, elem in tree:
         if event == 'start':
@@ -119,6 +120,10 @@ def parse_cit_contexts(string: Text) -> Tuple[Dict[Text, Any]]:
                     ref_dict[rid]['year'] = elem.text
                 if elem.tag == 'pub-id' and elem.get('pub-id-type') == 'pmid':
                     ref_dict[rid]['pmid'] = elem.text
+                if elem.tag == 'name':
+                    ref_dict[rid]['authors'] = ref_dict[rid].get('authors', [])
+                    ref_dict[rid]['authors'].append({child.tag: child.text for child in elem})
+                    authors.append({child.tag: child.text for child in elem})
         if event == 'end' and in_body == True:
             if elem.tag == 'body':
                 in_body = False
@@ -137,22 +142,41 @@ def parse_cit_contexts(string: Text) -> Tuple[Dict[Text, Any]]:
                 prev_xref_rid = rid2int(elem.get('rid'))
             else:
                 prev_xref_rid = None
+    # Strip citation anchor remnants.
+    document['text'] = clean_anchor_remnants(clean_authors(text, authors))
     return (document, get_edges(offset_dict, ref_dict, document, text))
 
 
+def clean_anchor_remnants(text: Text):
+    return re.sub(r'\s*[\[\(][\s\-,–;(and)]*[\]\)]', '', text)
+
+
+def clean_authors(text: Text, authors: List[Dict[Text, Text]]):
+    text = re.sub(r'et al\.', ' ', text)
+    for author in authors:
+        if author.get('surname'):
+            text = re.sub(re.escape(author['surname']), '', text)
+    return text
+
+
 def get_edges(offset_dict, ref_dict, document, text, char_window=600):
-    edges = []
+    edges = defaultdict(dict)
     for rid, offsets in offset_dict.items():
         # Some papers are simply missing bibliography ref entries for some
         # xrefs
         if ref_dict.get(rid):
             for offset in offsets:
-                edges.append({
-                    'cite_sentence': mid_sentence(get_context_window(text, offset, char_window)),
-                    'citing_paper_id': document.get('pmid'),
-                    'cited_paper': ref_dict[rid]
-                    })
-    return edges
+                authors = ref_dict[rid].get('authors', [])
+                window = get_context_window(text, offset, char_window)
+                window = clean_anchor_remnants(clean_authors(window, authors))
+                context = mid_sentence(window)
+                edges[context]['citing_paper_id'] = document.get('pmid')
+                edges[context]['context'] = context
+                if edges[context].get('cited_papers'):
+                    edges[context]['cited_papers'].append(ref_dict[rid])
+                else:
+                    edges[context]['cited_papers'] = [ref_dict[rid]]
+    return list(edges.values())
 
 
 def write_edge_data(edge_data, out_path):
@@ -182,9 +206,9 @@ def batch(iterable, n):
 
 def parse_archive(archive_path: Text,
                   out_dir: Text,
-                  batch_size: int = 20,
+                  batch_size: int = 18,
                   limit: Optional[int] = None,
-                  pool_size: int = 16):
+                  pool_size: int = 12):
     pool = mp.Pool(pool_size)
     name = '.'.join(os.path.split(data_path)[-1].split('.')[:2])
 
@@ -193,13 +217,9 @@ def parse_archive(archive_path: Text,
     print("counting files")
     total = tar_count(data_path, limit)
 
-    print(total)
-    sys.stdout.flush()
-
     progress = tqdm.tqdm(unit="documents", total=total)
     for i, res in enumerate(pool.imap_unordered(parse_batch,
                             batch(itertools.islice(tar_iter(data_path), total), batch_size))):
-        sys.stderr.write(f'\rdone {i*batch_size}')
         results += res
         progress.update(batch_size)
     pool.close()
@@ -210,8 +230,9 @@ def parse_archive(archive_path: Text,
     write_edge_data(edges, os.path.join(out_dir, f"{name}_edges.jsonl"))
     write_document_data(articles, os.path.join(out_dir, f"{name}_articles.jsonl"))
 
+
 if __name__ == "__main__":
     data_path = sys.argv[1]
     out_dir = sys.argv[2]
     batch_size = int(sys.argv[3])
-    parse_archive(data_path, out_dir, batch_size, limit=1000)
+    parse_archive(data_path, out_dir, batch_size, limit=None)

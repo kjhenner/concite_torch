@@ -18,6 +18,10 @@ Index the papers with ES. Retrieve top k.
 
 Indices: abstract, full text, aggregate_context
 
+How to control aggregate_contexts based on cutoff date?
+
+Include 
+
 ## Evaluation
 
 nDCG

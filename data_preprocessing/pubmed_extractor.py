@@ -171,6 +171,7 @@ def get_edges(offset_dict, ref_dict, document, text, char_window=600):
                 window = clean_anchor_remnants(clean_authors(window, authors))
                 context = mid_sentence(window)
                 edges[context]['citing_paper_id'] = document.get('pmid')
+                edges[context]['year'] = document.get('year')
                 edges[context]['context'] = context
                 if edges[context].get('cited_papers'):
                     edges[context]['cited_papers'].append(ref_dict[rid])
@@ -208,7 +209,8 @@ def parse_archive(archive_path: Text,
                   out_dir: Text,
                   batch_size: int = 18,
                   limit: Optional[int] = None,
-                  pool_size: int = 12):
+                  pool_size: int = 12,
+                  output_batch_size: int = 10000):
     pool = mp.Pool(pool_size)
     name = '.'.join(os.path.split(data_path)[-1].split('.')[:2])
 

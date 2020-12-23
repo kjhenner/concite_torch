@@ -3,13 +3,11 @@
 import sys
 import re
 import json
-import asyncio
 import time
 from pathlib import Path
 
 from typing import Text, Dict, Any, Optional, List
 
-import jsonlines
 import tqdm
 import numpy as np
 from sklearn import metrics
@@ -85,22 +83,19 @@ def msearch(client: Elasticsearch,
     return client.msearch(request, request_timeout=30)
 
 
-def generate_examples(data_dir: Text,
-                      pattern: Text = r'.*_edges.jsonl',
-                      limit: Optional[int] = None,
-                      pmid_set: Optional[set] = None):
-    """Given a data directory, yield articles and index entries."""
-    files = [f_name for f_name in Path(data_dir).iterdir() if re.match(pattern, str(f_name))]
-    idx = 0
-    for fname in files:
-        with jsonlines.open(fname) as reader:
-            for edge_datum in reader:
-                for paper in edge_datum['cited_papers']:
-                    if limit and idx == limit:
-                        return
-                    if not pmid_set or paper.get('pmid') in pmid_set:
-                        yield (edge_datum['context'], paper.get('pmid'))
-                        idx += 1
+def paged_edge_iter(client: Elasticsearch,
+                    size: int = 500):
+    data = client.search(index='pubmed_edges',
+                         scroll='10m',
+                         size=size,
+                         body={})
+    sid = data['_scroll_id']
+    scroll_size = len(data['hits']['hits'])
+    while scroll_size:
+        yield [hit['_source']['pmid'] for hit in data['hits']['hits']]
+        data = client.scroll(scroll_id=sid, scroll='10m')
+        sid = data['_scroll_id']
+        scroll_size = len(data['hits']['hits'])
 
 
 def get_internal_pmid_set(data_dir: Text,
@@ -116,32 +111,6 @@ def get_internal_pmid_set(data_dir: Text,
                     pmids.append(article_datum['pmid'])
             progress.update(1)
     return set(pmids)
-
-
-def count_articles(data_dir: Text,
-                   pattern: Text = r'.*_articles.jsonl'):
-    """Given a data directory, count the number of article entries."""
-    files = [f_name for f_name in Path(data_dir).iterdir() if re.match(pattern, str(f_name))]
-    total = 0
-    for fname in files:
-        with open(fname) as f:
-            total += sum(1 for _ in f)
-    return total
-
-
-def extract_year(string: Text) -> Text:
-    """Extract the 4 digit year from a year string.
-
-    Note that the string extracted from the XML is very inconsistent.
-    We have to expect that for many examples, the accurate year simply
-    isn't reliably recoverable. However, these errors represent a relatively
-    small proportion of the overall corpus.
-    """
-    if not string:
-        return None
-    m = re.match(r'\d{4}', string)
-    if m:
-        return m[0]
 
 
 @timeit
@@ -180,9 +149,8 @@ def run_eval(client, examples, page_size, field: Text='abstract'):
     print(f"nDCG: {metrics.ndcg_score(np.asarray(y_true), np.asarray(y_pred)):.3f}")
     print(f"A total of {total} correct results retrieved in top {k}.")
 
-if __name__ == "__main__":
 
-    data_dir = sys.argv[1]
+if __name__ == "__main__":
 
     client = Elasticsearch(
         hosts=[ES_HOST],
@@ -190,15 +158,7 @@ if __name__ == "__main__":
         verify_certs=False,
         port=ES_PORT)
 
-    # Gotta go fast :(
-#    client = AsyncElasticsearch(
-#        hosts=[ES_HOST],
-#        scheme='http',
-#        verify_certs=False,
-#        port=ES_PORT)
-
     pmid_set = get_internal_pmid_set(data_dir)
-    #pmid_set = None
 
     limit = 500
 

@@ -3,6 +3,7 @@
 import sys
 import re
 import json
+from functools import partial
 from pathlib import Path
 from itertools import islice, chain
 
@@ -29,7 +30,7 @@ def msearch_pmids(client: Elasticsearch,
             "query": {
                 "bool": {
                     "must": [
-                        {"match": {"cited_pmids": pmid}}
+                        {"match": {"cited_pmid": pmid}}
                     ]
                 }
             },
@@ -48,7 +49,7 @@ def msearch_pmids(client: Elasticsearch,
 
 def paged_article_iter(client: Elasticsearch,
                        size: int = 500):
-    data = client.search(index=ES_INDEX_NAME,
+    data = client.search(index='pubmed_articles',
                          scroll='10m',
                          size=size,
                          body={})
@@ -76,8 +77,42 @@ def update_action_iter(client: Elasticsearch):
     for pmids in paged_article_iter(client):
         results = list(msearch_pmids(client, pmids, year_cutoff=2017))
         for pmid, hits in results:
-            contexts = [hit["_source"]["context"] for hit in hits["hits"]["hits"]]
+            contexts = list(set([hit["_source"]["context"] for hit in hits["hits"]["hits"]]))
             yield to_article_update(pmid, contexts)
+
+
+def paged_edge_iter(client: Elasticsearch,
+                    size: int = 500):
+    data = client.search(index='pubmed_edges',
+                         scroll='10m',
+                         size=size,
+                         body={})
+    sid = data['_scroll_id']
+    scroll_size = len(data['hits']['hits'])
+    while scroll_size:
+        yield [(hit['_id'], hit['_source']['cited_pmid']) for hit in data['hits']['hits']]
+        data = client.scroll(scroll_id=sid, scroll='10m')
+        sid = data['_scroll_id']
+        scroll_size = len(data['hits']['hits'])
+
+
+def update_edge_iter(client: Elasticsearch):
+    for edge_batch in paged_edge_iter(client):
+        _ids, cited_pmids = zip(*edge_batch)
+        result = client.mget(index='pubmed_articles', body={"ids":cited_pmids})
+        for i, doc in enumerate(result['docs']):
+            yield to_edge_update(_ids[i], doc['found'])
+
+
+def to_edge_update(_id: Text, internal: bool):
+    return {
+        "_op_type": "update",
+        "_index": "pubmed_edges",
+        "_id": _id,
+        "doc": {
+            "internal": internal
+        }
+    }
 
 
 def batch_iterable(iterable, n):
@@ -87,14 +122,14 @@ def batch_iterable(iterable, n):
         yield list(chain([first], islice(it, n-1)))
 
 
-def bulk_update(action_batch):
+def bulk_update(index: Text, action_batch):
     client = Elasticsearch(
         hosts=[ES_HOST],
         scheme='http',
         verify_certs=False,
         port=ES_PORT)
     bulk(client=client,
-         index='pubmed_articles',
+         index=index,
          actions=action_batch)
 
 
@@ -112,6 +147,13 @@ if __name__ == "__main__":
 
     total = client.count(index="pubmed_articles")['count']
     progress = tqdm.tqdm(unit="document", total=total)
-    for _ in pool.imap_unordered(bulk_update, batch_iterable(update_action_iter(client), batch_size)):
+    func = partial(bulk_update, 'pubmed_articles')
+    for _ in pool.imap_unordered(func, batch_iterable(update_action_iter(client), batch_size)):
+        progress.update(batch_size)
+
+    total = client.count(index="pubmed_edges")['count']
+    progress = tqdm.tqdm(unit="edge", total=total)
+    func = partial(bulk_update, 'pubmed_edges')
+    for _ in pool.imap_unordered(func, batch_iterable(update_edge_iter(client), batch_size)):
         progress.update(batch_size)
     pool.close()

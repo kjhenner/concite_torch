@@ -100,6 +100,8 @@ def extract_year(string: Text) -> Text:
     m = re.match(r'\d{4}', string)
     if m:
         return m[0]
+    else:
+        return None
 
 
 def clean_anchor_remnants(text: Text):
@@ -195,7 +197,7 @@ def parse_cit_contexts(string: Text) -> Tuple[Dict[Text, Any]]:
 
 
 def get_edges(offset_dict, ref_dict, document, text, char_window=600):
-    edges = defaultdict(dict)
+    edges = []
     for rid, offsets in offset_dict.items():
         # Some papers are simply missing bibliography ref entries for some
         # xrefs
@@ -205,15 +207,14 @@ def get_edges(offset_dict, ref_dict, document, text, char_window=600):
                 window = get_context_window(text, offset, char_window)
                 window = clean_anchor_remnants(clean_authors(window, authors))
                 context = mid_sentence(window)
-                edges[context]['position'] = offset / len(text)
-                edges[context]['citing_pmid'] = document.get('pmid')
-                edges[context]['year'] = document.get('year')
-                edges[context]['context'] = context
-                if edges[context].get('cited_pmids'):
-                    edges[context]['cited_pmids'].append(ref_dict[rid]['pmid'])
-                else:
-                    edges[context]['cited_pmids'] = [ref_dict[rid]['pmid']]
-    return list(edges.values()) 
+                edges.append({
+                    'position': offset / len(text),
+                    'citing_pmid': document.get('pmid'),
+                    'year': extract_year(document.get('year')),
+                    'context': context,
+                    'cited_pmid': ref_dict[rid]['pmid']
+                })
+    return edges
 
 
 def mid_sentence(string):
@@ -331,7 +332,8 @@ def create_edge_index(client: Elasticsearch,
                  "predicted_intent": {"type": "keyword"},
                  "position": {"type": "float"},
                  "citing_pmid": {"type": "keyword"},
-                 "cited_pmids": {"type": "keyword"}
+                 "cited_pmid": {"type": "keyword"},
+                 "internal": {"type": "boolean"}
                }
              }
            }
@@ -356,7 +358,7 @@ def to_es_edge_entry(edge_datum: Dict[Text, Any]):
             "context": edge_datum.get("context"),
             "position": edge_datum.get("position"),
             "citing_pmid": edge_datum.get("citing_pmid"),
-            "cited_pmids": edge_datum.get("cited_pmids")}
+            "cited_pmid": edge_datum.get("cited_pmid")}
 
 
 def count_articles(data_dir: Text,

@@ -1,9 +1,4 @@
-import sys
 import os
-import pprint
-import json
-import itertools
-import csv
 import jsonlines
 import tarfile
 import re
@@ -15,8 +10,6 @@ import logging
 from pathlib import Path
 
 from collections import defaultdict
-from collections import deque
-from functools import partial
 from itertools import islice, chain
 
 import xml.etree.cElementTree as etree
@@ -121,11 +114,9 @@ def parse_cit_contexts(string: Text) -> Tuple[Dict[Text, Any]]:
     tree = etree.iterparse(io.StringIO(initial_value=string), events=('start', 'end'))
     document = {}
     in_body = False
-    following_xref = False
     prev_xref_rid = None
     offset = 0
     text = ''
-    section = ''
     rid = ''
     ref_dict = defaultdict(dict)
     offset_dict = defaultdict(list)
@@ -135,7 +126,7 @@ def parse_cit_contexts(string: Text) -> Tuple[Dict[Text, Any]]:
         if event == 'start':
             if elem.tag == 'body':
                 in_body = True
-            if elem.text is not None and elem.tag !='xref' and in_body:
+            if elem.text is not None and elem.tag != 'xref' and in_body:
                 offset += len(elem.text)
                 text += elem.text
             if elem.tag == 'journal-id' and elem.get('journal-id-type') == 'nlm-ta':
@@ -173,11 +164,9 @@ def parse_cit_contexts(string: Text) -> Tuple[Dict[Text, Any]]:
                     ref_dict[rid]['authors'] = ref_dict[rid].get('authors', [])
                     ref_dict[rid]['authors'].append({child.tag: child.text for child in elem})
                     authors.append({child.tag: child.text for child in elem})
-        if event == 'end' and in_body == True:
+        if event == 'end' and in_body:
             if elem.tag == 'body':
                 in_body = False
-            if elem.tag == 'title':
-                title = elem.itertext()
             if elem.tag == 'xref' and elem.get('ref-type') == 'bibr':
                 for id_part in elem.get('rid').split(' '):
                     offset_dict[rid2int(id_part)].append(offset)
@@ -374,7 +363,7 @@ def count_articles(data_dir: Text,
 
 def load_context_lookup(path: Text):
     context_lookup = {}
-    print(f"Loading context lookup")
+    print("Loading context lookup")
     with jsonlines.open(path) as reader:
         for datum in reader:
             context = [context['context'] for context in datum["contexts"]]
@@ -415,7 +404,7 @@ def path_iter(path):
             yield f_name
         else:
             print(f"{path} does not match the expected .xml.tar.gz file extension "
-                   "for OA archive files. Skipping processing for this file.")
+                  "for OA archive files. Skipping processing for this file.")
 
 
 def main():

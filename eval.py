@@ -1,19 +1,15 @@
 """Load data from jsonlines files into an ElasticSearch index."""
 
-import sys
-import re
 import json
 import time
 from itertools import islice, chain
-from pathlib import Path
 
-from typing import Text, Dict, Any, Optional, List, Iterable
+from typing import Text, List
 
 import tqdm
 import numpy as np
 from sklearn import metrics
 from elasticsearch import Elasticsearch
-from elasticsearch import AsyncElasticsearch
 
 ES_HOST = 'localhost'
 ES_PORT = 9200
@@ -101,10 +97,10 @@ def run_eval(client, k, page_size, fields: List[Text]):
     progress = tqdm.tqdm(unit="example")
     for ex_batch in ex_batch_iter:
         responses = msearch(client,
-                    [ex['context'] for ex in ex_batch],
-                    'pubmed_articles',
-                    size=k,
-                    fields=fields)['responses']
+                            [ex['context'] for ex in ex_batch],
+                            'pubmed_articles',
+                            size=k,
+                            fields=fields)['responses']
         progress.update(page_size)
         for i, response in enumerate(responses):
             results = response['hits']['hits']

@@ -1,17 +1,13 @@
 from torch.utils.data import Dataset
-import sys
-import os
-import json
 import jsonlines
-from pathlib import Path
-from elasticsearch import Elasticsearch
-from typing import List, Text
+from typing import Text
+
 
 class JsonlCitationDataset(Dataset):
 
     def __init__(self,
                  fname: Text,
-                 preprocess = None):
+                 preprocess=None):
         super().__init__()
 
         self.preprocess = preprocess
@@ -19,7 +15,7 @@ class JsonlCitationDataset(Dataset):
             self.data = list(reader)
         self.total = len(self.data)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         if self.preprocess:
             return self.preprocess(self.data[idx])
         else:

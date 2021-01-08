@@ -1,26 +1,15 @@
-import os
-import re
 import json
-import argparse
-from argparse import Namespace, ArgumentParser
-from collections import OrderedDict
+from argparse import Namespace
 from functools import partial
 from typing import Dict
-import jsonlines
 
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn import MSELoss
 from torch.utils.data import DataLoader
 
 import pytorch_lightning as pl
 from pytorch_lightning.core.lightning import LightningModule
-from pytorch_lightning import Trainer
 
-from transformers import AlbertConfig, AlbertForSequenceClassification, AlbertTokenizerFast
-from transformers import BertConfig, BertForSequenceClassification, BertForNextSentencePrediction, BertTokenizerFast, AdamW
+from transformers import BertConfig, BertForNextSentencePrediction, BertTokenizerFast, AdamW
 
 from jsonl_citation_dataset import JsonlCitationDataset
 
@@ -39,7 +28,7 @@ def preprocess(tokenizer, x: Dict, max_length: int = 256) -> Dict:
         }
     }
     """
-    
+
     tokenized = tokenizer(
         text=x["anchor"],
         text_pair=x["example"]["abstract"] or "",
@@ -69,7 +58,7 @@ class CitationNegModel(LightningModule):
 
         self.acc = pl.metrics.Accuracy()
         self.val_acc = pl.metrics.Accuracy()
-        
+
         bert_config = BertConfig.from_pretrained("bert-base-uncased",
                                                  hidden_dropout_config=self.hparams.dropout,
                                                  attention_probs_dropout_prob=self.hparams.dropout,
@@ -85,7 +74,7 @@ class CitationNegModel(LightningModule):
     def training_step(self, batch, batch_idx):
         output = self(batch)
         loss = output.loss
-        #self.log('loss', loss, prog_bar=True)
+        # self.log('loss', loss, prog_bar=True)
         preds = output.logits.max(1).indices
         self.log('acc', self.acc(preds, batch['labels']))
         return loss
@@ -120,20 +109,21 @@ class CitationNegModel(LightningModule):
             for n, p in self.transformer.bert.encoder.layer.named_parameters():
                 if int(n.split('.')[0]) in self.hparams.freeze_layers:
                     p.requires_grad = False
-        
+
         print(self)
         print(json.dumps(self.hparams, indent=2))
         no_decay = ['bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
             {'params': [p for n, p in self.named_parameters() if not any(nd in n for nd in no_decay)],
-                       'weight_decay': self.hparams.weight_decay},
+                'weight_decay': self.hparams.weight_decay},
             {'params': [p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)],
-                       'weight_decay': 0}
+                'weight_decay': 0}
         ]
         opt = AdamW(optimizer_grouped_parameters, lr=lr, betas=(b1, b2))
         return opt
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     args = {
         'batch_size': 16,
         'lr': 0.0001,

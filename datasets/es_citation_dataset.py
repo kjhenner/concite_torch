@@ -1,18 +1,11 @@
 from torch.utils.data import IterableDataset
-import sys
 import os
-import torch
 import tqdm
-import numpy as np
 import json
 import random
-import tqdm
-from pathlib import Path
 from elasticsearch import Elasticsearch
 from typing import List, Text
 
-import matplotlib.pyplot as plt
-import re
 
 class CitationDataset(IterableDataset):
 
@@ -43,7 +36,7 @@ class CitationDataset(IterableDataset):
     def get_negative_batch(self):
         body = {
             "size": self.page_size,
-		    "query": {
+            "query": {
                 "function_score": {
                     "random_score": {}
                 }
@@ -61,7 +54,6 @@ class CitationDataset(IterableDataset):
         return [hit["_source"] for hit in self.client.mget(index='pubmed_articles',
                                                            _source=['abstract', 'pmid'],
                                                            body=body)['docs']]
-
 
     def get_total_articles(self):
         body = {
@@ -118,7 +110,7 @@ class CitationDataset(IterableDataset):
             scroll_size = len(data['hits']['hits'])
 
     def __repr__(self):
-        return f'Dataset class with for pubmed citation edges'
+        return 'Dataset class with for pubmed citation edges'
 
     def to_jsonlines(self, out_dir: Text, test_prop: int = 0.1, val_prop: int = 0.1):
         progress = tqdm.tqdm(unit="example", total=self.total_examples)
@@ -134,9 +126,3 @@ class CitationDataset(IterableDataset):
                             validate.write(json.dumps(example) + '\n')
                         else:
                             train.write(json.dumps(example) + '\n')
-
-
-if __name__ == "__main__":
-    
-    test = CitationDataset(lambda x:x)
-    test.to_jsonlines(sys.argv[1])

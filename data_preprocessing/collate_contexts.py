@@ -1,13 +1,10 @@
 """Load data from jsonlines files into an ElasticSearch index."""
 
-import sys
-import re
 import json
 from functools import partial
-from pathlib import Path
 from itertools import islice, chain
 
-from typing import Text, Dict, Any, Optional, List
+from typing import Text, List
 
 import tqdm
 import multiprocessing as mp
@@ -99,7 +96,7 @@ def paged_edge_iter(client: Elasticsearch,
 def update_edge_iter(client: Elasticsearch):
     for edge_batch in paged_edge_iter(client):
         _ids, cited_pmids = zip(*edge_batch)
-        result = client.mget(index='pubmed_articles', body={"ids":cited_pmids})
+        result = client.mget(index='pubmed_articles', body={"ids": cited_pmids})
         for i, doc in enumerate(result['docs']):
             yield to_edge_update(_ids[i], doc['found'])
 

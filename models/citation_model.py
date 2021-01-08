@@ -146,6 +146,6 @@ if __name__=="__main__":
         'val_data': '/mnt/atlas/cit_pred_jsonlines/validate.jsonl'
     }
     model = CitationNegModel(Namespace(**args))
-    trainer = pl.Trainer(gpus=2, max_epochs=10, accelerator='ddp')
+    trainer = pl.Trainer(gpus=2, max_epochs=1, accelerator='ddp')
     trainer.fit(model)
-    torch.save(model)
+    torch.save(model.state_dict(), '/mnt/atlas/models/model.pt')

@@ -1,93 +1,56 @@
 import os
+import re
+import json
 import argparse
 from argparse import Namespace, ArgumentParser
 from collections import OrderedDict
 from functools import partial
 from typing import Dict
+import jsonlines
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import MSELoss
 from torch.utils.data import DataLoader
 
 import pytorch_lightning as pl
 from pytorch_lightning.core.lightning import LightningModule
 from pytorch_lightning import Trainer
 
-from transformers import BertTokenizer, BertForSequenceClassification, BertConfig
+from transformers import AlbertConfig, AlbertForSequenceClassification, AlbertTokenizerFast
+from transformers import BertConfig, BertForSequenceClassification, BertForNextSentencePrediction, BertTokenizerFast, AdamW
 
-from citation_dataset import CitationDataset
-
-
-def mask_and_pad(token_ids, token_type_ids, max_length, pad_token_id, label=1):
-    """Get padded token ids, padded type ids, and attention mask."""
-    pad_len = max_length - len(token_ids)
-    attention_mask = [1] * len(token_ids) + [0] * pad_len
-    padded_token_ids = token_ids + ([pad_token_id] * pad_len)
-    padded_token_type_ids = token_type_ids + ([pad_token_id] * pad_len)
-    return {
-        "input_ids": torch.tensor(padded_token_ids), 
-        "attention_mask": torch.tensor(attention_mask),
-        "token_type_ids": torch.tensor(padded_token_type_ids),
-        "labels": torch.tensor(label).float()
-    }
+from jsonl_citation_dataset import JsonlCitationDataset
 
 
-
-def preprocess(tokenizer: BertTokenizer, x: Dict, max_length: int = 256) -> Dict:
+def preprocess(tokenizer, x: Dict, max_length: int = 256) -> Dict:
     """Preprocess an example from the dataset.
 
     Example example:
     {
         "anchor": "A recent study examining post-mortem...",
-        "positive": {
-            "abstract": "Neurogranin (Ng) is a post-synaptic..."
+        "example": {
+            "abstract": "Neurogranin (Ng) is a post-synaptic...",
             "pmid": "29700597"
         },
-        "negative": [
-            {
-                "abstract": "Background Herpesviruses and bacteria..."
-                "pmid": "32646510"
-            },
-            {
-                "abstract": "Background Herpesviruses and bacteria..."
-                "pmid": "32646510"
-            },
-            ...
-        ]
+        "label": 1
+        }
     }
     """
     
-    # Tokenize positive and negative examples
-    pos = tokenizer.encode_plus(
-        x["anchor"],
-        x["positive"]["abstract"] or "",
+    tokenized = tokenizer(
+        text=x["anchor"],
+        text_pair=x["example"]["abstract"] or "",
         add_special_tokens=True,
         max_length=max_length,
+        return_tensors='pt',
+        padding='max_length',
         truncation=True
     )
-
-    neg = tokenizer.encode_plus(
-        x["anchor"],
-        x["negative"]["abstract"] or "",
-        add_special_tokens=True,
-        max_length=max_length,
-        truncation=True
-    )
-
-    return {
-        "pos": mask_and_pad(pos['input_ids'],
-                            pos['token_type_ids'],
-                            max_length=max_length,
-                            pad_token_id=tokenizer.pad_token_id,
-                            label=1),
-        "neg": mask_and_pad(neg['input_ids'],
-                            neg['token_type_ids'],
-                            max_length=max_length,
-                            pad_token_id=tokenizer.pad_token_id,
-                            label=0),
-    }
+    tokenized['labels'] = x['label']
+    return tokenized
 
 
 class CitationNegModel(LightningModule):
@@ -96,28 +59,55 @@ class CitationNegModel(LightningModule):
         super(CitationNegModel, self).__init__()
 
         self.hparams = hparams
-        # num_labels=1 specifies a regression
-        # https://huggingface.co/transformers/model_doc/bert.html#transformers.BertConfig
-        config = BertConfig(num_labels=1, return_dict=True)
-        self.bert_model = BertForSequenceClassification.from_pretrained("bert-base-uncased",
-                                                                        config=config)
+
+#        self.train_metrics = nn.ModuleDict({
+#            'Acc': pl.metrics.Accuracy(),
+#            'F1': pl.metrics.classification.F1(num_classes=2),
+#            'P': pl.metrics.classification.Precision(num_classes=2),
+#            'R': pl.metrics.classification.Recall(num_classes=2)
+#        })
+
+        self.acc = pl.metrics.Accuracy()
+        self.val_acc = pl.metrics.Accuracy()
+        
+        bert_config = BertConfig.from_pretrained("bert-base-uncased",
+                                                 hidden_dropout_config=self.hparams.dropout,
+                                                 attention_probs_dropout_prob=self.hparams.dropout,
+                                                 num_labels=2)
+        self.transformer = BertForNextSentencePrediction.from_pretrained("bert-base-uncased", config=bert_config)
+        self.tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased", do_lower_case=True)
 
     def forward(self, inputs):
-        pos_loss = self.bert_model(**inputs['pos'])[0]
-        neg_loss = self.bert_model(**inputs['neg'])[0]
-
-        return torch.add(pos_loss, neg_loss)
+        for k, v in inputs.items():
+            inputs[k] = v.squeeze()
+        return self.transformer(**inputs)
 
     def training_step(self, batch, batch_idx):
-        loss = self(batch)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        output = self(batch)
+        loss = output.loss
+        #self.log('loss', loss, prog_bar=True)
+        preds = output.logits.max(1).indices
+        self.log('acc', self.acc(preds, batch['labels']))
         return loss
 
+    def training_epoch_end(self, outs):
+        self.log('acc', self.val_acc.compute())
+
+    def validation_step(self, batch, batch_idx):
+        output = self(batch)
+        loss = output.loss
+        self.log('val_loss', loss)
+        preds = output.logits.max(1).indices
+        self.log('val_acc', self.val_acc(preds, batch['labels']))
+
     def train_dataloader(self):
-        tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", do_lower_case=True)
-        dataset = CitationDataset(partial(preprocess, tokenizer),
-                                  page_size=self.hparams.batch_size*8)
-        train_dataloader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=18)
+        dataset = JsonlCitationDataset(self.hparams.train_data, partial(preprocess, self.tokenizer))
+        train_dataloader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=10)
+        return train_dataloader
+
+    def val_dataloader(self):
+        dataset = JsonlCitationDataset(self.hparams.val_data, partial(preprocess, self.tokenizer))
+        train_dataloader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=10)
         return train_dataloader
 
     def configure_optimizers(self):
@@ -125,18 +115,37 @@ class CitationNegModel(LightningModule):
         b1 = self.hparams.b1
         b2 = self.hparams.b2
 
-        opt = torch.optim.Adam(self.parameters(), lr=lr, betas=(b1, b2))
+        # Freeze transformer layers
+        if self.hparams.freeze_layers:
+            for n, p in self.transformer.bert.encoder.layer.named_parameters():
+                if int(n.split('.')[0]) in self.hparams.freeze_layers:
+                    p.requires_grad = False
+        
+        print(self)
+        print(json.dumps(self.hparams, indent=2))
+        no_decay = ['bias', 'LayerNorm.weight']
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in self.named_parameters() if not any(nd in n for nd in no_decay)],
+                       'weight_decay': self.hparams.weight_decay},
+            {'params': [p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)],
+                       'weight_decay': 0}
+        ]
+        opt = AdamW(optimizer_grouped_parameters, lr=lr, betas=(b1, b2))
         return opt
 
 if __name__=="__main__":
     args = {
-        'batch_size': 12,
-        'lr': 0.001,
-        'b1': 0.5,
+        'batch_size': 16,
+        'lr': 0.0001,
+        'b1': 0.9,
         'b2': 0.999,
+        'freeze_layers': list(range(11)),
+        'dropout': 0.4,
+        'weight_decay': 0.15,
+        'train_data': '/mnt/atlas/cit_pred_jsonlines/train.jsonl',
+        'val_data': '/mnt/atlas/cit_pred_jsonlines/validate.jsonl'
     }
     model = CitationNegModel(Namespace(**args))
-
-   # trainer = pl.Trainer(gpus=1, max_steps=50, max_epochs=2)
-    trainer = pl.Trainer(gpus=1)
+    trainer = pl.Trainer(gpus=2, max_epochs=10, accelerator='ddp')
     trainer.fit(model)
+    torch.save(model)
